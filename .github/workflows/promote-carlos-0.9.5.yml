@@ -1,0 +1,93 @@
+name: Promote Carlos 0.9.5
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/promote-carlos-0.9.5.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_REPO: admin414/carlos-v2
+      DESKTOP_TAG: ci-v0.9.5
+      AGENT_TAG: ci-v0.13.4
+      FINAL_TAG: v0.9.5
+    steps:
+      - name: Wait for validated staging artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          desktop_assets=(
+            Carlos-Mac-universal.dmg
+            Carlos-Mac-universal.dmg.blockmap
+            latest-mac.yml
+            Carlos-Windows-Setup.exe
+            Carlos-Windows-Setup.exe.blockmap
+            latest.yml
+          )
+          agent_assets=(
+            carlos-agent.tgz
+            Carlos-Chrome-Extension.zip
+          )
+          ready=0
+          for attempt in $(seq 1 90); do
+            desktop_json="$(gh release view "$DESKTOP_TAG" -R "$SOURCE_REPO" --json assets 2>/dev/null || true)"
+            agent_json="$(gh release view "$AGENT_TAG" -R "$SOURCE_REPO" --json assets 2>/dev/null || true)"
+            ready=1
+            for asset in "${desktop_assets[@]}"; do
+              if ! printf '%s' "$desktop_json" | jq -e --arg n "$asset" '.assets[]? | select(.name == $n)' >/dev/null; then ready=0; fi
+            done
+            for asset in "${agent_assets[@]}"; do
+              if ! printf '%s' "$agent_json" | jq -e --arg n "$asset" '.assets[]? | select(.name == $n)' >/dev/null; then ready=0; fi
+            done
+            if [[ "$ready" == "1" ]]; then
+              echo "All staging artifacts are ready."
+              break
+            fi
+            echo "Waiting for Carlos staging artifacts (attempt $attempt/90)..."
+            sleep 20
+          done
+          if [[ "$ready" != "1" ]]; then
+            echo "Staging artifacts did not become ready in time." >&2
+            exit 1
+          fi
+
+      - name: Download staging artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh release download "$DESKTOP_TAG" -R "$SOURCE_REPO" -D release             -p 'Carlos-Mac-universal.dmg'             -p 'Carlos-Mac-universal.dmg.blockmap'             -p 'latest-mac.yml'             -p 'Carlos-Windows-Setup.exe'             -p 'Carlos-Windows-Setup.exe.blockmap'             -p 'latest.yml'
+          gh release download "$AGENT_TAG" -R "$SOURCE_REPO" -D release             -p 'carlos-agent.tgz'             -p 'Carlos-Chrome-Extension.zip'
+          test "$(stat -c%s release/Carlos-Mac-universal.dmg)" -gt 1000000
+          test "$(stat -c%s release/Carlos-Windows-Setup.exe)" -gt 1000000
+          test "$(stat -c%s release/carlos-agent.tgz)" -gt 10000
+          ls -lh release
+
+      - name: Publish Carlos 0.9.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$FINAL_TAG" >/dev/null 2>&1; then
+            gh release upload "$FINAL_TAG" release/* --clobber
+            gh release edit "$FINAL_TAG" --latest --title "Carlos 0.9.5" --notes "Carlos Desktop 0.9.5 with Carlos Remote 0.13.4. Adds Remote Desktop Commander parity work, approvals lifecycle, configuration and observability tools, advanced search, native PDF/DOCX/XLSX support, browser/desktop control improvements, and corrected Mac/Windows packaging."
+          else
+            gh release create "$FINAL_TAG" release/* --latest --title "Carlos 0.9.5" --notes "Carlos Desktop 0.9.5 with Carlos Remote 0.13.4. Adds Remote Desktop Commander parity work, approvals lifecycle, configuration and observability tools, advanced search, native PDF/DOCX/XLSX support, browser/desktop control improvements, and corrected Mac/Windows packaging."
+          fi
+
+      - name: Verify published release
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in             Carlos-Mac-universal.dmg             Carlos-Mac-universal.dmg.blockmap             latest-mac.yml             Carlos-Windows-Setup.exe             Carlos-Windows-Setup.exe.blockmap             latest.yml             carlos-agent.tgz             Carlos-Chrome-Extension.zip; do
+            gh release view "$FINAL_TAG" --json assets --jq '.assets[].name' | grep -Fx "$asset"
+          done
